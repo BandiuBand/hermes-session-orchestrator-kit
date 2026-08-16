@@ -1,0 +1,29 @@
+# Local supervisor state and session exports
+.state/
+artifacts/
+*.jsonl
+*.log
+
+# Machine-specific configuration
+supervisor/config.json
+session-handoff/scripts/config.json
+.env
+.env.*
+
+# Python/test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Generated distribution archives
+skill.zip
+dist/
+build/

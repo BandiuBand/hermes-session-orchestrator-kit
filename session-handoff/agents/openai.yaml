@@ -1,0 +1,4 @@
+interface:
+  display_name: "Session Handoff"
+  short_description: "Orchestrate persistent Hermes sessions safely."
+  default_prompt: "Use $session-handoff to delegate this task to persistent Hermes workers and supervise their results."

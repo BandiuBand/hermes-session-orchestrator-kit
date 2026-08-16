@@ -1,0 +1,51 @@
+{
+  "state_db": "~/.local/state/hermes-handoff/state.db",
+  "artifact_dir": "~/.local/state/hermes-handoff/artifacts",
+  "hermes": {
+    "adapter": "cli",
+    "cli_argv": ["hermes"],
+    "cli_timeout_seconds": 3600,
+    "worker_turn_timeout_seconds": 1800,
+    "worker_max_turns": 80,
+    "delivery_timeout_seconds": 900,
+    "no_restore_cwd": false,
+    "model": "auto",
+    "lm_studio_cli_argv": ["lms"],
+    "api_url": "http://127.0.0.1:8642",
+    "api_key_env": "API_SERVER_KEY",
+    "default_source": "tool"
+  },
+  "gpu": {
+    "enabled": false,
+    "poll_seconds": 2,
+    "free_memory_threshold_mb": 1500,
+    "wait_timeout_seconds": 180
+  },
+  "scheduler": {
+    "lock_wait_timeout_seconds": 3600,
+    "lock_lease_seconds": 7200,
+    "lock_poll_seconds": 0.25
+  },
+  "supervisor": {
+    "show_console": true,
+    "origin_release_timeout_seconds": 1200,
+    "console_close_delay_seconds": 10
+  },
+  "services": {
+    "hermes_llm": {
+      "adapter": "lm_studio",
+      "cli_argv": ["lms"],
+      "model": "auto",
+      "stop": [],
+      "start": [],
+      "ready": []
+    },
+    "application_llm": {
+      "stop": [],
+      "start": [],
+      "ready": []
+    }
+  },
+  "handoff_grace_seconds": 3,
+  "service_ready_timeout_seconds": 180
+}

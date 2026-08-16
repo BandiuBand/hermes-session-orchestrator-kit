@@ -1,0 +1,26 @@
+{
+  "state_db": "~/.local/state/hermes-handoff/state.db",
+  "artifact_dir": "~/.local/state/hermes-handoff/artifacts",
+  "hermes": {
+    "adapter": "cli",
+    "cli_argv": ["hermes"],
+    "cli_timeout_seconds": 3600,
+    "worker_turn_timeout_seconds": 1800,
+    "worker_max_turns": 80,
+    "delivery_timeout_seconds": 900,
+    "no_restore_cwd": false,
+    "model": "auto",
+    "lm_studio_cli_argv": ["lms"],
+    "default_source": "tool"
+  },
+  "scheduler": {
+    "lock_wait_timeout_seconds": 3600,
+    "lock_lease_seconds": 7200,
+    "lock_poll_seconds": 0.25
+  },
+  "supervisor": {
+    "show_console": true,
+    "origin_release_timeout_seconds": 1200,
+    "console_close_delay_seconds": 10
+  }
+}
