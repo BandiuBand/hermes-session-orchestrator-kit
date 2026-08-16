@@ -58,6 +58,8 @@ When a worker result is delivered back, review it and choose one of:
 - ask the worker an ephemeral clarification;
 - finish.
 
+Treat every delivered result as a bounded control-plane turn. You are the orchestrator, not the worker: do not continue the investigation or repeat a full audit. Perform at most one short check of status, schema, and primary output existence, then update task state and hand off the next action or finish. The supervisor appends the same reminder to every origin delivery. If this control turn still times out before creating a child handoff, the supervisor may resume the origin exactly once with a short recovery prompt that does not repeat the large worker payload.
+
 When the event is `WORKER_TIMED_OUT`, first read the complete session export at `worker_session_export_path`. Do not assume timeout means the task failed. Based on that full transcript, choose whether to resume the same worker, correct its instructions, delegate to a new worker, or finish. The supervisor intentionally passes a file path instead of copying or summarizing the session into the event.
 
 Treat timeout recovery as a bounded decision turn, not as permission for the orchestrator to take over the worker's investigation. After reading the export, make at most one short read-only state check, then issue the selected session-handoff command or report the terminal decision. Do not continue debugging, edit task artifacts, run the worker's probes, or explore implementation details in the orchestrator session. If handing off, stop immediately after `HANDOFF_ACCEPTED`.

@@ -270,6 +270,10 @@ Store the error. Resume orchestrator with `worker_failed` and logs/error details
 
 If the worker turn times out, stop its Hermes process, export the complete persistent worker session to a job-scoped JSONL artifact, and resume the orchestrator with `worker_timed_out` plus the absolute export path. The supervisor does not summarize or inject the transcript. The orchestrator reads the export and decides whether to resume the same worker, correct its instructions, delegate to a different worker, or finish.
 
+### Origin delivery times out
+
+Every result delivered to the origin includes a short reminder that the origin is an orchestrator and must perform only a bounded control-plane decision, not continue the worker's investigation. If the origin exceeds its delivery timeout, treat the forced stop as the end of that turn and release any accepted child handoffs because the normal `post_llm_call` hook cannot fire. When no child was created, resume the same origin exactly once with a compact recovery prompt. The recovery prompt relies on the result and partial checks already persisted in the Hermes session and must not repeat the large worker payload. A second timeout is terminal for that delivery attempt, except that any child handoff it created is still released.
+
 ### External command times out
 
 Send SIGTERM, wait grace period, then SIGKILL. Persist stdout/stderr paths and timeout status.

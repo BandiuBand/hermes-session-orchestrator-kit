@@ -158,6 +158,7 @@ Common symptoms:
 - **Job remains `accepted`:** check the `post_llm_call` hook, its approval, and `origin_release_timeout_seconds`.
 - **A second model loads in LM Studio:** use `"model": "auto"` or the exact loaded model key. Confirm exactly one LLM is loaded. The supervisor never restores variants or parameters.
 - **Large model times out during prompt ingestion:** increase `worker_turn_timeout_seconds`, `delivery_timeout_seconds`, and keep `origin_release_timeout_seconds` longer than the maximum origin turn.
+- **Origin validates forever after a worker result:** keep `supervisor.origin_delivery_retry_once` enabled. Every delivery includes a control-only reminder, and one compact recovery turn is allowed when the first delivery times out without creating a child handoff.
 - **Worker finished but origin did not resume:** inspect `show-job <job-id>` and verify the origin still exists in `hermes sessions list`.
 - **Timeout recovery:** read the complete file at `worker_session_export_path`; do not rely on a short summary.
 

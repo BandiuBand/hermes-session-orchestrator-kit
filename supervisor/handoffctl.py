@@ -671,6 +671,25 @@ def scheduled_chat(cfg: Config, store: StateStore, owner: str, client: Any,
         return client.chat(sid, prompt)
 
 
+ORCHESTRATOR_CONTROL_RULE = """
+
+[ORCHESTRATOR_CONTROL_RULE]
+You are the orchestrator, not the worker. Keep this control turn short.
+Do not continue the worker's investigation or repeat a full audit. Perform at most
+one bounded check of status/schema/primary outputs, then accept or reject the
+result, update task state, and either create the next handoff, return a correction
+to a worker, or finish. After HANDOFF_ACCEPTED, end the turn immediately.
+"""
+
+ORIGIN_DELIVERY_RECOVERY = """[ORIGIN_DELIVERY_RECOVERY]
+Your previous control turn exceeded its timeout. The handoff event, worker result,
+and checks you already performed are preserved in this session. Do not repeat them
+and do not re-read the full worker payload. Perform only the next control-plane
+action: accept/reject and update state, create the next handoff or correction, or
+finish. After HANDOFF_ACCEPTED, end the turn immediately.
+"""
+
+
 def scheduled_origin_chat(
     cfg: Config, store: StateStore, owner: str, client: Any,
     origin_sid: str, prompt: str, timeout_seconds: int,
@@ -680,19 +699,35 @@ def scheduled_origin_chat(
     A detached handoff created during the origin turn normally receives its release
     from the post_llm_call hook. If the CLI exceeds its hard timeout, subprocess
     termination makes that turn definitively over but the hook cannot run. Emit
-    the equivalent release here so accepted child work is not stranded.
+    the equivalent release here so accepted child work is not stranded. If no
+    child was created, optionally run one bounded control-only recovery turn.
     """
-    try:
-        return scheduled_chat(
-            cfg, store, owner, client, origin_sid, prompt, timeout_seconds,
-        )
-    except subprocess.TimeoutExpired:
-        released = store.mark_origin_turn_complete(origin_sid)
-        store.event(owner, "origin_forced_stop_released", {
-            "origin_session_id": origin_sid,
-            "released_job_ids": released,
-        })
-        raise
+    current_prompt = prompt.rstrip() + ORCHESTRATOR_CONTROL_RULE
+    retry_once = bool(
+        cfg.raw.get("supervisor", {}).get("origin_delivery_retry_once", True)
+    )
+    attempt = 0
+    while True:
+        try:
+            return scheduled_chat(
+                cfg, store, owner, client, origin_sid, current_prompt,
+                timeout_seconds,
+            )
+        except subprocess.TimeoutExpired:
+            released = store.mark_origin_turn_complete(origin_sid)
+            store.event(owner, "origin_forced_stop_released", {
+                "origin_session_id": origin_sid,
+                "released_job_ids": released,
+                "attempt": attempt + 1,
+            })
+            if released or attempt >= 1 or not retry_once:
+                raise
+            attempt += 1
+            current_prompt = ORIGIN_DELIVERY_RECOVERY + ORCHESTRATOR_CONTROL_RULE
+            store.event(owner, "origin_delivery_retrying", {
+                "origin_session_id": origin_sid,
+                "attempt": attempt + 1,
+            })
 
 
 def delivery_timeout(cfg: Config) -> int:

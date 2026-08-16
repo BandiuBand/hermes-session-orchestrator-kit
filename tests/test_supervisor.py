@@ -106,13 +106,81 @@ def test_forced_origin_timeout_releases_handoffs_created_during_turn():
         unrelated = store.create_job("delegate", "other-origin", None, {"task": "other"})
         with mock.patch.object(
             h, "scheduled_chat", side_effect=subprocess.TimeoutExpired("hermes chat", 9),
-        ):
+        ) as scheduled:
             with pytest.raises(subprocess.TimeoutExpired):
                 h.scheduled_origin_chat(
                     cfg, store, "parent-job", mock.Mock(), "origin-sid", "review", 9,
                 )
+        assert scheduled.call_count == 1
+        assert "[ORCHESTRATOR_CONTROL_RULE]" in scheduled.call_args.args[5]
         assert store.origin_turn_released(child)
         assert not store.origin_turn_released(unrelated)
+        store.close()
+
+
+def test_origin_timeout_without_child_retries_once_with_control_only_prompt():
+    with tempfile.TemporaryDirectory() as td:
+        cfg = h.Config({"state_db": os.path.join(td, "state.db")})
+        store = h.StateStore(cfg.db_path)
+        recovered = {"response": "next handoff accepted"}
+        with mock.patch.object(
+            h, "scheduled_chat",
+            side_effect=[subprocess.TimeoutExpired("hermes chat", 9), recovered],
+        ) as scheduled:
+            result = h.scheduled_origin_chat(
+                cfg, store, "parent-job", mock.Mock(), "origin-sid",
+                "[WORKER_RESULT]\nvery large worker payload", 9,
+            )
+        assert result == recovered
+        assert scheduled.call_count == 2
+        first_prompt = scheduled.call_args_list[0].args[5]
+        retry_prompt = scheduled.call_args_list[1].args[5]
+        assert "very large worker payload" in first_prompt
+        assert "[ORCHESTRATOR_CONTROL_RULE]" in first_prompt
+        assert "[ORIGIN_DELIVERY_RECOVERY]" in retry_prompt
+        assert "very large worker payload" not in retry_prompt
+        store.close()
+
+
+def test_origin_delivery_recovery_is_bounded_to_one_retry():
+    with tempfile.TemporaryDirectory() as td:
+        cfg = h.Config({"state_db": os.path.join(td, "state.db")})
+        store = h.StateStore(cfg.db_path)
+        with mock.patch.object(
+            h, "scheduled_chat", side_effect=subprocess.TimeoutExpired("hermes chat", 9),
+        ) as scheduled:
+            with pytest.raises(subprocess.TimeoutExpired):
+                h.scheduled_origin_chat(
+                    cfg, store, "parent-job", mock.Mock(), "origin-sid", "review", 9,
+                )
+        assert scheduled.call_count == 2
+        store.close()
+
+
+def test_second_origin_timeout_releases_handoff_created_by_recovery_turn():
+    with tempfile.TemporaryDirectory() as td:
+        cfg = h.Config({"state_db": os.path.join(td, "state.db")})
+        store = h.StateStore(cfg.db_path)
+        calls = 0
+        child = None
+
+        def time_out_and_create_child(*_args, **_kwargs):
+            nonlocal calls, child
+            calls += 1
+            if calls == 2:
+                child = store.create_job(
+                    "delegate", "origin-sid", None, {"task": "next"},
+                )
+            raise subprocess.TimeoutExpired("hermes chat", 9)
+
+        with mock.patch.object(h, "scheduled_chat", side_effect=time_out_and_create_child):
+            with pytest.raises(subprocess.TimeoutExpired):
+                h.scheduled_origin_chat(
+                    cfg, store, "parent-job", mock.Mock(), "origin-sid", "review", 9,
+                )
+        assert calls == 2
+        assert child is not None
+        assert store.origin_turn_released(child)
         store.close()
 
 

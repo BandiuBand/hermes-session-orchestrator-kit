@@ -21,6 +21,7 @@
   "supervisor": {
     "show_console": true,
     "origin_release_timeout_seconds": 1200,
+    "origin_delivery_retry_once": true,
     "console_close_delay_seconds": 10
   }
 }
