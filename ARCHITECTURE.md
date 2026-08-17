@@ -161,12 +161,17 @@ Recommended worker states:
 - `created`
 - `ready`
 - `running`
+- `stopped`
 - `yielded`
 - `completed`
 - `failed`
 - `archived`
 
 A worker that completes is not deleted. The session remains addressable.
+If a worker turn stops because of an error or timeout and the supervisor is still
+delivering that event to the orchestrator, keep the worker and job in `stopped`.
+Successful control-plane recovery records the job as `stopped_delivered`; only a
+failed recovery (or a failure with no requested recovery) makes `failed` terminal.
 
 ### 10.1 Worker yield protocol
 

@@ -502,8 +502,8 @@ def test_worker_failure_restarts_origin_and_delivers_failure():
         with mock.patch.object(h, "hermes_client", return_value=fake):
             h.cmd_delegate(cfg, store, args)
         job = store.jobs()[0]
-        assert job["state"] == "failed_delivered"
-        assert store.session("worker-fails")["status"] == "failed"
+        assert job["state"] == "stopped_delivered"
+        assert store.session("worker-fails")["status"] == "stopped"
         assert fake.calls[-1][0] == "origin-sid"
         assert "[WORKER_FAILED]" in fake.calls[-1][1]
         store.close()
@@ -532,10 +532,40 @@ def test_resume_worker_failure_restarts_origin_and_delivers_failure():
         with mock.patch.object(h, "hermes_client", return_value=fake):
             h.cmd_resume_worker(cfg, store, args)
         job = store.jobs()[0]
-        assert job["state"] == "failed_delivered"
-        assert store.session("worker-fails")["status"] == "failed"
+        assert job["state"] == "stopped_delivered"
+        assert store.session("worker-fails")["status"] == "stopped"
         assert fake.calls[-1][0] == "origin-sid"
         assert "[WORKER_FAILED]" in fake.calls[-1][1]
+        store.close()
+
+
+def test_worker_failure_is_stopped_during_recovery_and_failed_if_recovery_fails():
+    class FakeHermes:
+        def __init__(self, state_store):
+            self.store = state_store
+
+        def chat(self, sid, prompt):
+            if sid == "worker-sid":
+                raise RuntimeError("worker crashed")
+            assert self.store.jobs()[0]["state"] == "stopped"
+            assert self.store.session("worker-fails")["status"] == "stopped"
+            raise RuntimeError("origin unavailable")
+
+    with tempfile.TemporaryDirectory() as td:
+        cfg = h.Config({"state_db": os.path.join(td, "state.db")})
+        store = h.StateStore(cfg.db_path)
+        store.upsert_session("worker-fails", "worker-sid", "worker")
+        args = Namespace(
+            worker="worker-fails", task="task", origin="origin-sid", resume_origin=True,
+            detached=False, _worker_job=None, config="unused",
+        )
+        with mock.patch.object(h, "hermes_client", return_value=FakeHermes(store)):
+            with pytest.raises(RuntimeError, match="worker crashed"):
+                h.cmd_delegate(cfg, store, args)
+        job = store.jobs()[0]
+        assert job["state"] == "failed"
+        assert store.session("worker-fails")["status"] == "failed"
+        assert "origin unavailable" in job["error"]
         store.close()
 
 
@@ -569,7 +599,7 @@ def test_resume_worker_timeout_exports_full_session_path_for_origin_decision():
         job = store.jobs()[0]
         result = json.loads(job["result_json"])
         export_path = result["worker_session_export_path"]
-        assert job["state"] == "failed_delivered"
+        assert job["state"] == "stopped_delivered"
         assert fake.exports == [("worker-sid", export_path)]
         assert export_path.endswith("worker-session-worker-sid.jsonl")
         assert "[WORKER_TIMED_OUT]" in fake.calls[-1][1]

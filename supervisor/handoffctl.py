@@ -1053,9 +1053,6 @@ def cmd_delegate(cfg: Config, store: StateStore, args: argparse.Namespace) -> No
         if worker_completed:
             store.set_job(job_id, "delivery_failed", result=result, error=str(e))
         else:
-            if store.session(args.worker):
-                store.set_session_status(args.worker, "failed")
-            store.set_job(job_id, "failed", error=str(e))
             if args.resume_origin:
                 failure_result = {
                     "worker_alias": args.worker,
@@ -1063,6 +1060,9 @@ def cmd_delegate(cfg: Config, store: StateStore, args: argparse.Namespace) -> No
                     "worker_state": "failed",
                     "error": str(e),
                 }
+                if store.session(args.worker):
+                    store.set_session_status(args.worker, "stopped")
+                store.set_job(job_id, "stopped", failure_result, error=str(e))
                 timed_out = isinstance(e, subprocess.TimeoutExpired)
                 if timed_out and worker_sid and api is not None:
                     try:
@@ -1090,14 +1090,20 @@ def cmd_delegate(cfg: Config, store: StateStore, args: argparse.Namespace) -> No
                         delivery_timeout(cfg),
                     )
                     failure_result["origin_response"] = extract_text(origin_out)
-                    store.set_job(job_id, "failed_delivered", failure_result, error=str(e))
-                    print(json.dumps({"status": "HANDOFF_FAILED_DELIVERED", "job_id": job_id, **failure_result}, ensure_ascii=False, indent=2))
+                    store.set_job(job_id, "stopped_delivered", failure_result, error=str(e))
+                    print(json.dumps({"status": "HANDOFF_STOPPED_DELIVERED", "job_id": job_id, **failure_result}, ensure_ascii=False, indent=2))
                     return
                 except Exception as delivery_error:
+                    if store.session(args.worker):
+                        store.set_session_status(args.worker, "failed")
                     store.set_job(
-                        job_id, "delivery_failed", result=failure_result,
+                        job_id, "failed", result=failure_result,
                         error=f"worker error: {e}; origin restart error: {delivery_error}",
                     )
+            else:
+                if store.session(args.worker):
+                    store.set_session_status(args.worker, "failed")
+                store.set_job(job_id, "failed", error=str(e))
         raise
 
 
@@ -1169,8 +1175,6 @@ def cmd_resume_worker(cfg: Config, store: StateStore, args: argparse.Namespace) 
         if worker_completed:
             store.set_job(job_id, "delivery_failed", result=result, error=str(e))
         else:
-            store.set_session_status(args.worker, "failed")
-            store.set_job(job_id, "failed", error=str(e))
             if args.resume_origin and origin:
                 failure_result = {
                     "worker_alias": args.worker,
@@ -1178,6 +1182,8 @@ def cmd_resume_worker(cfg: Config, store: StateStore, args: argparse.Namespace) 
                     "worker_state": "failed",
                     "error": str(e),
                 }
+                store.set_session_status(args.worker, "stopped")
+                store.set_job(job_id, "stopped", failure_result, error=str(e))
                 timed_out = isinstance(e, subprocess.TimeoutExpired)
                 if timed_out and api is not None:
                     try:
@@ -1205,14 +1211,18 @@ def cmd_resume_worker(cfg: Config, store: StateStore, args: argparse.Namespace) 
                         delivery_timeout(cfg),
                     )
                     failure_result["origin_response"] = extract_text(origin_out)
-                    store.set_job(job_id, "failed_delivered", failure_result, error=str(e))
-                    print(json.dumps({"status": "HANDOFF_FAILED_DELIVERED", "job_id": job_id, **failure_result}, ensure_ascii=False, indent=2))
+                    store.set_job(job_id, "stopped_delivered", failure_result, error=str(e))
+                    print(json.dumps({"status": "HANDOFF_STOPPED_DELIVERED", "job_id": job_id, **failure_result}, ensure_ascii=False, indent=2))
                     return
                 except Exception as delivery_error:
+                    store.set_session_status(args.worker, "failed")
                     store.set_job(
-                        job_id, "delivery_failed", result=failure_result,
+                        job_id, "failed", result=failure_result,
                         error=f"worker error: {e}; origin restart error: {delivery_error}",
                     )
+            else:
+                store.set_session_status(args.worker, "failed")
+                store.set_job(job_id, "failed", error=str(e))
         raise
 
 

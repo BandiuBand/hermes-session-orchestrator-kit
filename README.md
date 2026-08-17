@@ -34,6 +34,8 @@ This is community software, not an official Nous Research project. Read [ARCHITE
 
 If a worker exceeds its wall timeout, the supervisor stops it, exports the complete session to `artifacts/<job-id>/worker-session-<session-id>.jsonl`, and resumes the orchestrator with the export path. The transcript is not duplicated into the prompt. If an orchestrator turn itself is forcibly stopped after creating another handoff, the supervisor emits the missing release so the accepted child job is not stranded.
 
+While a stopped worker result is being delivered to the orchestrator, both the job and worker session remain `stopped`, not `failed`. Successful delivery records `stopped_delivered`; `failed` is terminal only when the orchestrator cannot be recovered or no recovery was requested.
+
 Every origin delivery also carries a short control-plane reminder: the orchestrator must not take over the worker's investigation or repeat a full audit. If an origin delivery times out without creating a child handoff, the supervisor retries that origin exactly once with a compact recovery message; the large worker payload and completed checks are not sent again. A handoff created before either timeout is released immediately instead of starting another origin retry.
 
 ## Requirements
