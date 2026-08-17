@@ -283,6 +283,25 @@ def test_visible_cli_adapter_accepts_human_session_summary_label():
     assert out["session_id"] == "20260816_visible_abc123"
 
 
+def test_visible_cli_reader_failure_does_not_strand_supervisor():
+    class BrokenOutput:
+        def __iter__(self):
+            raise OSError("simulated broken Windows pipe")
+
+    proc = mock.Mock()
+    proc.stdout = BrokenOutput()
+    proc.poll.return_value = 0
+    proc.wait.return_value = 0
+    cfg = h.Config({"hermes": {
+        "adapter": "cli", "cli_argv": ["hermes.exe"],
+        "visible_exit_drain_seconds": 0.01,
+    }})
+    with mock.patch.object(h.subprocess, "Popen", return_value=proc):
+        completed = h.HermesCLI(cfg)._run_visible(["hermes.exe", "chat"], "resume", 1)
+    assert completed.returncode == 0
+    assert completed.stdout == ""
+
+
 def test_phase2_worker_alias_keeps_same_session_across_delegate_and_resume():
     class FakeHermes:
         def __init__(self):

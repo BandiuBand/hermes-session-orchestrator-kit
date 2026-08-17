@@ -437,6 +437,7 @@ class HermesCLI:
         self.no_restore_cwd = bool(hermes.get("no_restore_cwd", False))
         self.model = hermes.get("model")
         self.visible = os.environ.get("HANDOFF_VISIBLE_CONSOLE") == "1"
+        self.visible_exit_drain_seconds = float(hermes.get("visible_exit_drain_seconds", 2))
         self.max_turns = int(hermes.get("worker_max_turns", 80))
         self.chat_extra_argv = hermes.get("cli_chat_extra_argv", [])
         if not isinstance(self.chat_extra_argv, list) or not all(
@@ -491,29 +492,39 @@ class HermesCLI:
         pending: queue.Queue[Optional[str]] = queue.Queue()
 
         def read_output() -> None:
-            assert proc.stdout is not None
-            for line in proc.stdout:
-                pending.put(line)
-            pending.put(None)
+            try:
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    pending.put(line)
+            except (OSError, ValueError):
+                # The process return code remains authoritative; Windows may
+                # tear down the redirected pipe before the reader sees EOF.
+                pass
+            finally:
+                # A broken/never-closed Windows pipe must not strand the
+                # supervisor after the Hermes process has already exited.
+                pending.put(None)
 
         threading.Thread(target=read_output, daemon=True).start()
         deadline = time.monotonic() + timeout
         stream_done = False
-        empty_polls_after_exit = 0
+        exit_drain_deadline: Optional[float] = None
         try:
             while not stream_done:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise subprocess.TimeoutExpired(argv, timeout)
+                if proc.poll() is not None and exit_drain_deadline is None:
+                    exit_drain_deadline = time.monotonic() + self.visible_exit_drain_seconds
+                if exit_drain_deadline is not None and time.monotonic() >= exit_drain_deadline:
+                    break
+                queue_wait = min(0.2, remaining)
+                if exit_drain_deadline is not None:
+                    queue_wait = min(queue_wait, max(0.001, exit_drain_deadline - time.monotonic()))
                 try:
-                    line = pending.get(timeout=min(0.2, remaining))
+                    line = pending.get(timeout=queue_wait)
                 except queue.Empty:
-                    if proc.poll() is not None:
-                        empty_polls_after_exit += 1
-                        if empty_polls_after_exit >= 5:
-                            stream_done = True
                     continue
-                empty_polls_after_exit = 0
                 if line is None:
                     stream_done = True
                 else:
