@@ -291,7 +291,7 @@ class StateStore:
         return self.db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
 
     def jobs(self) -> list[sqlite3.Row]:
-        return list(self.db.execute("SELECT * FROM jobs ORDER BY created_at DESC"))
+        return list(self.db.execute("SELECT * FROM jobs ORDER BY created_at DESC, rowid DESC"))
 
     def event(self, job_id: Optional[str], event: str, detail: dict[str, Any]) -> None:
         self.db.execute(
@@ -1396,7 +1396,36 @@ def cmd_exclusive_run(cfg: Config, store: StateStore, args: argparse.Namespace) 
         if not args._worker_job:
             print(json.dumps({"job_id": job_id, **result}, ensure_ascii=False, indent=2))
     except Exception as e:
-        store.set_job(job_id, "failed", error=str(e))
+        failure_result = {
+            "argv": argv, "cwd": args.cwd, "timeout": args.timeout,
+            "error": str(e),
+        }
+        if args.resume_origin and origin:
+            store.set_job(job_id, "stopped", failure_result, error=str(e))
+            try:
+                delivered = scheduled_origin_chat(
+                    cfg, store, job_id, hermes_client(cfg), origin,
+                    "[EXCLUSIVE_RUN_FAILED]\n"
+                    f"job_id: {job_id}\nkind: exclusive_external_command\n"
+                    f"argv: {json.dumps(argv, ensure_ascii=False)}\nerror: {e}\n\n"
+                    "The exclusive command did not complete. Correct the argv or probe and "
+                    "schedule exactly one replacement exclusive-run, or record a terminal blocker.",
+                    delivery_timeout(cfg),
+                )
+                failure_result["origin_response"] = extract_text(delivered)
+                store.set_job(job_id, "stopped_delivered", failure_result, error=str(e))
+                print(json.dumps({
+                    "status": "EXCLUSIVE_RUN_FAILURE_DELIVERED", "job_id": job_id,
+                    **failure_result,
+                }, ensure_ascii=False, indent=2))
+                return
+            except Exception as delivery_error:
+                store.set_job(
+                    job_id, "failed", failure_result,
+                    error=f"exclusive command error: {e}; origin restart error: {delivery_error}",
+                )
+        else:
+            store.set_job(job_id, "failed", failure_result, error=str(e))
         raise
 
 

@@ -796,6 +796,42 @@ def test_exclusive_run_timeout_is_recorded_without_service_switching():
         store.close()
 
 
+def test_exclusive_run_execution_error_is_delivered_to_origin_for_correction():
+    class FakeHermes:
+        def chat(self, sid, prompt):
+            assert sid == "origin-1"
+            assert "[EXCLUSIVE_RUN_FAILED]" in prompt
+            assert "not a valid Win32 application" in prompt
+            assert store.jobs()[0]["state"] == "stopped"
+            return {"response": "retry with python interpreter"}
+
+    with tempfile.TemporaryDirectory() as td:
+        cfg = h.Config({
+            "state_db": os.path.join(td, "state.db"),
+            "artifact_dir": os.path.join(td, "artifacts"),
+        })
+        store = h.StateStore(cfg.db_path)
+        args = Namespace(
+            origin="origin-1", command=["probe.py"], cwd=None, timeout=5,
+            detached=False, resume_origin=True, _worker_job=None, config="unused",
+        )
+        with (
+            mock.patch.object(
+                h, "run_argv",
+                side_effect=OSError(193, "%1 is not a valid Win32 application"),
+            ),
+            mock.patch.object(h, "hermes_client", return_value=FakeHermes()),
+        ):
+            h.cmd_exclusive_run(cfg, store, args)
+        job = store.jobs()[0]
+        result = json.loads(job["result_json"])
+        assert job["state"] == "stopped_delivered"
+        assert result["argv"] == ["probe.py"]
+        assert result["origin_response"] == "retry with python interpreter"
+        assert store.resource_locks() == []
+        store.close()
+
+
 def test_exclusive_run_releases_probe_slot_before_origin_delivery():
     class FakeHermes:
         def chat(self, sid, prompt):
