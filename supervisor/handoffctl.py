@@ -438,6 +438,11 @@ class HermesCLI:
         self.model = hermes.get("model")
         self.visible = os.environ.get("HANDOFF_VISIBLE_CONSOLE") == "1"
         self.max_turns = int(hermes.get("worker_max_turns", 80))
+        self.chat_extra_argv = hermes.get("cli_chat_extra_argv", [])
+        if not isinstance(self.chat_extra_argv, list) or not all(
+            isinstance(item, str) and item for item in self.chat_extra_argv
+        ):
+            raise RuntimeError("hermes.cli_chat_extra_argv must be an argv array of non-empty strings")
         self.lm_studio_cli = hermes.get("lm_studio_cli_argv", ["lms"])
         if not isinstance(self.lm_studio_cli, list) or not self.lm_studio_cli:
             raise RuntimeError("hermes.lm_studio_cli_argv must be a non-empty argv array")
@@ -601,7 +606,8 @@ class HermesCLI:
         argv = self.argv + ["chat", "--query", prompt]
         if not self.visible:
             argv.append("--quiet")
-        argv += ["--source", self.source, "--pass-session-id"] + self._model_args()
+        argv += ["--source", self.source, "--pass-session-id"]
+        argv += self.chat_extra_argv + self._model_args()
         cp = self._run(argv, "create-session")
         session_output = cp.stdout + "\n" + cp.stderr
         match = re.search(r"(?mi)^\s*(?:session_id|Session):\s*(\S+)\s*$", session_output)
@@ -625,7 +631,7 @@ class HermesCLI:
         argv += ["--source", self.source]
         if self.no_restore_cwd:
             argv.append("--no-restore-cwd")
-        argv += self._model_args()
+        argv += self.chat_extra_argv + self._model_args()
         cp = self._run(argv, "resume", timeout_seconds=timeout_seconds)
         return {"response": self._last_assistant_response(sid, cp.stdout)}
 

@@ -230,9 +230,27 @@ def test_cli_adapter_auto_selects_only_running_lm_studio_model():
     assert run.call_args_list[1].args[0][-2:] == ["--model", "qwen/qwen3.8-27b"]
 
 
+def test_cli_adapter_persists_restricted_toolsets_on_every_resume():
+    extra = [
+        "--toolsets", "terminal,file,skills", "--skills", "session-handoff", "--yolo",
+    ]
+    cfg = h.Config({"hermes": {
+        "adapter": "cli", "cli_argv": ["hermes.exe"],
+        "model": "qwen/qwen3.8-27b", "cli_chat_extra_argv": extra,
+    }})
+    completed = subprocess.CompletedProcess([], 0, stdout="continued\n", stderr="")
+    with mock.patch.object(h.subprocess, "run", return_value=completed) as run:
+        h.HermesCLI(cfg).chat("origin-sid", "continue phase")
+    argv = run.call_args.args[0]
+    assert argv[argv.index("--source") + 2:-2] == extra
+    assert "delegation" not in argv[argv.index("--toolsets") + 1].split(",")
+
+
 def test_cli_adapter_creates_and_renames_persistent_session():
+    extra = ["--toolsets", "terminal,file,skills", "--skills", "session-handoff"]
     cfg = h.Config({"hermes": {
         "adapter": "cli", "cli_argv": ["hermes.exe"], "model": "qwen/qwen3.8-27b",
+        "cli_chat_extra_argv": extra,
     }})
     created = subprocess.CompletedProcess(
         [], 0, stdout="WORKER_READY\n", stderr="\nsession_id: 20260816_worker_abc123\n"
@@ -243,6 +261,7 @@ def test_cli_adapter_creates_and_renames_persistent_session():
     assert out == {"session_id": "20260816_worker_abc123", "response": "WORKER_READY"}
     create_argv = run.call_args_list[0].args[0]
     assert create_argv[:2] == ["hermes.exe", "chat"]
+    assert create_argv[create_argv.index("--pass-session-id") + 1:-2] == extra
     assert create_argv[-2:] == ["--model", "qwen/qwen3.8-27b"]
     assert run.call_args_list[1].args[0] == [
         "hermes.exe", "sessions", "rename", "20260816_worker_abc123", "worker-phase2"

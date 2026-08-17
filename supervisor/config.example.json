@@ -7,6 +7,7 @@
     "cli_timeout_seconds": 3600,
     "worker_turn_timeout_seconds": 1800,
     "worker_max_turns": 80,
+    "cli_chat_extra_argv": ["--toolsets", "terminal,file,skills", "--skills", "session-handoff"],
     "delivery_timeout_seconds": 900,
     "no_restore_cwd": false,
     "model": "auto",
