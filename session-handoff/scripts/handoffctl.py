@@ -1335,6 +1335,71 @@ def cmd_run_command(cfg: Config, store: StateStore, args: argparse.Namespace) ->
         raise
 
 
+def cmd_exclusive_run(cfg: Config, store: StateStore, args: argparse.Namespace) -> None:
+    """Run one external argv command under LLM_SLOT without switching services."""
+    origin = args.origin or os.environ.get("HERMES_SESSION_ID")
+    argv = args.command
+    if args.resume_origin and not origin:
+        raise RuntimeError("origin session missing; pass --origin or run from Hermes with HERMES_SESSION_ID")
+    payload = {
+        "argv": argv, "cwd": args.cwd, "timeout": args.timeout,
+        "exclusive_llm_slot": True, "service_switch": False,
+    }
+    job_id = args._worker_job or store.create_job(
+        "exclusive_external_command", origin, None, payload,
+    )
+
+    if args.detached and not args._worker_job:
+        child = [
+            sys.executable, os.path.abspath(__file__), "--config", args.config,
+            "exclusive-run", "--timeout", str(args.timeout), "--_worker-job", job_id,
+        ]
+        if origin:
+            child += ["--origin", origin]
+        if args.cwd:
+            child += ["--cwd", args.cwd]
+        if args.resume_origin:
+            child += ["--resume-origin"]
+        child += ["--"] + argv
+        launch_detached(cfg, child, job_id, "exclusive-run")
+        print(json.dumps({"status": "HANDOFF_ACCEPTED", "job_id": job_id}))
+        return
+
+    if args._worker_job:
+        print(f"[SUPERVISOR] WAITING_FOR_ORIGIN_RELEASE origin={origin}", flush=True)
+        store.wait_origin_turn_release(job_id, origin_release_timeout(cfg))
+        print("[SUPERVISOR] ORIGIN_RELEASED; waiting for exclusive LLM slot.", flush=True)
+
+    job_dir = os.path.join(cfg.artifact_dir, job_id)
+    pathlib.Path(job_dir).mkdir(parents=True, exist_ok=True)
+    stdout_path = os.path.join(job_dir, "stdout.log")
+    stderr_path = os.path.join(job_dir, "stderr.log")
+    store.set_job(job_id, "running")
+    try:
+        with llm_slot(cfg, store, job_id):
+            result = run_argv(argv, args.cwd, args.timeout, stdout_path, stderr_path)
+        state = "timed_out" if result["timed_out"] else "completed"
+        store.set_job(job_id, state, result)
+        if args.resume_origin and origin:
+            delivered = scheduled_origin_chat(
+                cfg, store, job_id, hermes_client(cfg), origin,
+                "[HANDOFF_RESULT]\n"
+                f"job_id: {job_id}\nkind: exclusive_external_command\nstatus: {state}\n"
+                f"exit_code: {result['exit_code']}\nstdout_path: {stdout_path}\n"
+                f"stderr_path: {stderr_path}\nduration_seconds: {result['duration_seconds']}\n\n"
+                "The exclusive same-model probe has finished. The existing LM Studio model "
+                "was kept loaded. Continue the phase from this saved session.",
+                delivery_timeout(cfg),
+            )
+            result["origin_response"] = extract_text(delivered)
+            store.set_job(job_id, "delivered", result)
+        if not args._worker_job:
+            print(json.dumps({"job_id": job_id, **result}, ensure_ascii=False, indent=2))
+    except Exception as e:
+        store.set_job(job_id, "failed", error=str(e))
+        raise
+
+
 def service_argv(cfg: Config, service: str, action: str) -> list[str]:
     val = cfg.raw.get("services", {}).get(service, {}).get(action, [])
     if val is None:
@@ -1647,6 +1712,19 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--_worker-job", help=argparse.SUPPRESS)
     s.add_argument("command", nargs=argparse.REMAINDER)
     s.set_defaults(fn=cmd_run_command)
+
+    s = sub.add_parser(
+        "exclusive-run",
+        help="run one argv command under LLM_SLOT without unloading the current model",
+    )
+    s.add_argument("--origin")
+    s.add_argument("--cwd")
+    s.add_argument("--timeout", type=int, default=600)
+    s.add_argument("--detached", action="store_true")
+    s.add_argument("--resume-origin", action="store_true")
+    s.add_argument("--_worker-job", help=argparse.SUPPRESS)
+    s.add_argument("command", nargs=argparse.REMAINDER)
+    s.set_defaults(fn=cmd_exclusive_run)
 
     s = sub.add_parser("gpu-run")
     s.add_argument("--origin")

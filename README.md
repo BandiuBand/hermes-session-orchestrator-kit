@@ -130,12 +130,18 @@ Run these from the repository root; omit `--config` when `config.json` is beside
 python supervisor/handoffctl.py delegate "Run the test suite and fix the first failure" --detached --resume-origin
 python supervisor/handoffctl.py resume-worker worker-20260101-120000-abcd1234 "Apply the review feedback" --detached --resume-origin
 python supervisor/handoffctl.py inquire worker-20260101-120000-abcd1234 "Why this design?" --detached --resume-origin
+python supervisor/handoffctl.py exclusive-run --detached --resume-origin --timeout 600 -- ./run_same_model_probe
 python supervisor/handoffctl.py list-jobs
 python supervisor/handoffctl.py list-sessions
 python supervisor/handoffctl.py list-locks
 ```
 
 ## GPU service switching
+
+`exclusive-run` is for a prewritten command that needs the same currently loaded
+model as Hermes. It waits for origin release, owns `LLM_SLOT` for the command, and
+does not stop, load, unload, or restore any model. This prevents a probe from
+competing with the Hermes turn that scheduled it.
 
 `gpu-run` can stop the Hermes inference service, wait for a GPU memory guard, start an application LLM, run a command, reverse the services, and resume the origin. Service commands are deliberately configuration-driven because deployments may use LM Studio, Docker, systemd, llama.cpp, or vLLM.
 

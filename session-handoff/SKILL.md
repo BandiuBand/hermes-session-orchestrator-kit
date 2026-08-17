@@ -92,6 +92,19 @@ python "<HANDOFFCTL>" gpu-run --detached --resume-origin --timeout 1800 -- ./run
 
 If the response is `HANDOFF_ACCEPTED`, stop immediately. Do not inspect status, sleep, poll, or continue reasoning in the same turn.
 
+## Run a same-model probe exclusively
+
+For one deterministic external probe that must use the currently loaded LM Studio
+model without overlapping the active Hermes turn or unloading/reloading the model:
+
+```text
+python "<HANDOFFCTL>" exclusive-run --detached --resume-origin --timeout 600 -- ./run_same_model_probe
+```
+
+The supervisor waits for the origin turn's release hook, acquires `LLM_SLOT`, runs
+exactly that argv command while leaving LM Studio untouched, releases the slot,
+and then resumes the origin. After `HANDOFF_ACCEPTED`, end the turn immediately.
+
 ## Worker behavior
 
 When this session is acting as a worker:

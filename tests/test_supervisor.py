@@ -729,6 +729,112 @@ def test_phase1_synchronous_command_delivers_result():
         store.close()
 
 
+def test_exclusive_run_waits_for_release_holds_slot_and_never_switches_services():
+    with tempfile.TemporaryDirectory() as td:
+        cfg = h.Config({
+            "state_db": os.path.join(td, "state.db"),
+            "artifact_dir": os.path.join(td, "artifacts"),
+            "supervisor": {"origin_release_timeout_seconds": 5},
+        })
+        store = h.StateStore(cfg.db_path)
+        job_id = store.create_job("exclusive_external_command", "origin-1", None, {})
+        release_seen = False
+
+        def wait_for_release(wait_job_id, timeout):
+            nonlocal release_seen
+            assert wait_job_id == job_id
+            assert timeout == 5
+            assert store.job(job_id)["state"] == "accepted"
+            release_seen = True
+
+        def run_under_slot(argv, cwd, timeout, stdout_path, stderr_path):
+            assert release_seen
+            locks = store.resource_locks()
+            assert [(row["resource"], row["owner"]) for row in locks] == [("LLM_SLOT", job_id)]
+            return {
+                "exit_code": 0, "timed_out": False, "duration_seconds": 0.01,
+                "stdout_path": stdout_path, "stderr_path": stderr_path,
+            }
+
+        args = Namespace(
+            origin="origin-1", command=["probe.exe"], cwd=None, timeout=30,
+            detached=False, resume_origin=False, _worker_job=job_id, config="unused",
+        )
+        with (
+            mock.patch.object(store, "wait_origin_turn_release", side_effect=wait_for_release),
+            mock.patch.object(h, "run_argv", side_effect=run_under_slot),
+            mock.patch.object(h, "hermes_service_control") as service_control,
+            mock.patch.object(h, "run_control") as run_control,
+        ):
+            h.cmd_exclusive_run(cfg, store, args)
+        assert store.job(job_id)["state"] == "completed"
+        assert store.resource_locks() == []
+        service_control.assert_not_called()
+        run_control.assert_not_called()
+        store.close()
+
+
+def test_exclusive_run_timeout_is_recorded_without_service_switching():
+    with tempfile.TemporaryDirectory() as td:
+        cfg = h.Config({
+            "state_db": os.path.join(td, "state.db"),
+            "artifact_dir": os.path.join(td, "artifacts"),
+        })
+        store = h.StateStore(cfg.db_path)
+        args = Namespace(
+            origin=None, command=["slow-probe.exe"], cwd=None, timeout=1,
+            detached=False, resume_origin=False, _worker_job=None, config="unused",
+        )
+        fake_result = {
+            "exit_code": -1, "timed_out": True, "duration_seconds": 1.0,
+            "stdout_path": "stdout.log", "stderr_path": "stderr.log",
+        }
+        with mock.patch.object(h, "run_argv", return_value=fake_result):
+            h.cmd_exclusive_run(cfg, store, args)
+        assert store.jobs()[0]["state"] == "timed_out"
+        assert store.resource_locks() == []
+        store.close()
+
+
+def test_exclusive_run_releases_probe_slot_before_origin_delivery():
+    class FakeHermes:
+        def chat(self, sid, prompt):
+            assert sid == "origin-1"
+            assert "kind: exclusive_external_command" in prompt
+            return {"response": "phase continued"}
+
+    with tempfile.TemporaryDirectory() as td:
+        cfg = h.Config({
+            "state_db": os.path.join(td, "state.db"),
+            "artifact_dir": os.path.join(td, "artifacts"),
+        })
+        store = h.StateStore(cfg.db_path)
+        args = Namespace(
+            origin="origin-1", command=[sys.executable, "-c", "print('probe-ok')"],
+            cwd=None, timeout=5, detached=False, resume_origin=True,
+            _worker_job=None, config="unused",
+        )
+        with mock.patch.object(h, "hermes_client", return_value=FakeHermes()):
+            h.cmd_exclusive_run(cfg, store, args)
+        job = store.jobs()[0]
+        events = [
+            row["event"] for row in store.db.execute(
+                "SELECT event FROM events WHERE job_id=? ORDER BY id", (job["id"],)
+            )
+        ]
+        assert job["state"] == "delivered"
+        assert events.count("resource_acquired") == 2
+        assert events.count("resource_released") == 2
+        first_release = events.index("resource_released")
+        assert first_release < events.index("completed") < events.index("resource_acquired", first_release + 1)
+        assert store.resource_locks() == []
+        store.close()
+
+
+def test_exclusive_run_is_exposed_in_cli_help():
+    assert "exclusive-run" in h.build_parser().format_help()
+
+
 def test_phase1_detached_end_to_end_with_fake_hermes():
     with tempfile.TemporaryDirectory() as td:
         td_path = pathlib.Path(td)
