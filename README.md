@@ -38,6 +38,12 @@ While a stopped worker result is being delivered to the orchestrator, both the j
 
 Every origin delivery also carries a short control-plane reminder: the orchestrator must not take over the worker's investigation or repeat a full audit. If an origin delivery times out without creating a child handoff, the supervisor retries that origin exactly once with a compact recovery message; the large worker payload and completed checks are not sent again. A handoff created before either timeout is released immediately instead of starting another origin retry.
 
+For long bounded phases, `watch-orchestrator` closes the remaining idle gap. It
+does not mistake low GPU usage or silent CPU work for failure. Only when there is
+no `LLM_SLOT` owner and no accepted/running job for the configured interval does
+it resume the same durable orchestrator session. Point `--until-file` at the phase
+verdict so a completed phase is never restarted.
+
 ## Requirements
 
 - Python 3.10 or newer
@@ -131,6 +137,7 @@ python supervisor/handoffctl.py delegate "Run the test suite and fix the first f
 python supervisor/handoffctl.py resume-worker worker-20260101-120000-abcd1234 "Apply the review feedback" --detached --resume-origin
 python supervisor/handoffctl.py inquire worker-20260101-120000-abcd1234 "Why this design?" --detached --resume-origin
 python supervisor/handoffctl.py exclusive-run --detached --resume-origin --timeout 600 -- ./run_same_model_probe
+python supervisor/handoffctl.py watch-orchestrator orchestrator-main --idle-seconds 120 --until-file ./phase-results/P2.json
 python supervisor/handoffctl.py list-jobs
 python supervisor/handoffctl.py list-sessions
 python supervisor/handoffctl.py list-locks

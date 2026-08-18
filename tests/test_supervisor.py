@@ -98,6 +98,37 @@ def test_llm_slot_releases_when_chat_fails():
         store.close()
 
 
+def test_orchestration_busy_tracks_jobs_and_llm_slot():
+    with tempfile.TemporaryDirectory() as td:
+        store = h.StateStore(os.path.join(td, "state.db"))
+        assert not h.orchestration_busy(store)
+        job_id = store.create_job("delegate", "origin", None, {"task": "x"})
+        assert h.orchestration_busy(store)
+        store.set_job(job_id, "delivered", {"ok": True})
+        assert not h.orchestration_busy(store)
+        store.acquire_resource("LLM_SLOT", "probe", 1, 60, 0.001)
+        assert h.orchestration_busy(store)
+        store.release_resource("LLM_SLOT", "probe")
+        assert not h.orchestration_busy(store)
+        store.close()
+
+
+def test_watchdog_stops_when_phase_verdict_exists_without_resuming():
+    with tempfile.TemporaryDirectory() as td:
+        verdict = os.path.join(td, "P2.json")
+        pathlib.Path(verdict).write_text("{}", encoding="utf-8")
+        cfg = h.Config({"state_db": os.path.join(td, "state.db")})
+        store = h.StateStore(cfg.db_path)
+        store.upsert_session("orchestrator", "origin-sid", "orchestrator")
+        with mock.patch.object(h, "scheduled_origin_chat") as resume:
+            h.run_orchestrator_watchdog(
+                cfg, store, "orchestrator", 0, 0.001, verdict, None, max_cycles=1,
+            )
+        resume.assert_not_called()
+        assert store.resource_locks() == []
+        store.close()
+
+
 def test_forced_origin_timeout_releases_handoffs_created_during_turn():
     with tempfile.TemporaryDirectory() as td:
         cfg = h.Config({"state_db": os.path.join(td, "state.db")})

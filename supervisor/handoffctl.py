@@ -706,6 +706,14 @@ action: accept/reject and update state, create the next handoff or correction, o
 finish. After HANDOFF_ACCEPTED, end the turn immediately.
 """
 
+ORCHESTRATOR_WATCHDOG_RECOVERY = """[ORCHESTRATOR_WATCHDOG_RECOVERY]
+The control plane has been idle with no LLM slot owner and no accepted/running
+job. Resume orchestration from durable files and supervisor state. You are the
+orchestrator, not a worker: perform at most one bounded status check, then create
+exactly the next required handoff or finish the phase. Do not redo completed work.
+After HANDOFF_ACCEPTED, end the turn immediately.
+"""
+
 
 def scheduled_origin_chat(
     cfg: Config, store: StateStore, owner: str, client: Any,
@@ -757,6 +765,68 @@ def worker_turn_timeout(cfg: Config) -> int:
 
 def origin_release_timeout(cfg: Config) -> float:
     return float(cfg.raw.get("supervisor", {}).get("origin_release_timeout_seconds", 180))
+
+
+def orchestration_busy(store: StateStore) -> bool:
+    """True only while supervisor-owned work can legitimately make progress."""
+    if any(row["resource"] == "LLM_SLOT" for row in store.resource_locks()):
+        return True
+    row = store.db.execute(
+        "SELECT 1 FROM jobs WHERE state IN ('accepted','running') LIMIT 1"
+    ).fetchone()
+    return row is not None
+
+
+def run_orchestrator_watchdog(
+    cfg: Config, store: StateStore, orchestrator: str, idle_seconds: float,
+    poll_seconds: float, until_file: Optional[str], recovery_prompt: Optional[str],
+    max_cycles: Optional[int] = None,
+) -> None:
+    sid = resolve_sid(store, orchestrator)
+    owner = f"WATCHDOG:{sid}"
+    resource = f"ORCHESTRATOR_WATCHDOG:{sid}"
+    store.acquire_resource(resource, owner, 0.01, 86400, 0.01)
+    idle_since: Optional[float] = None
+    cycles = 0
+    try:
+        print(
+            f"[WATCHDOG] orchestrator={orchestrator} session={sid} "
+            f"idle_seconds={idle_seconds:g}", flush=True,
+        )
+        while True:
+            if until_file and os.path.isfile(until_file):
+                print(f"[WATCHDOG] completion file exists: {until_file}", flush=True)
+                return
+            if orchestration_busy(store):
+                idle_since = None
+            elif idle_since is None:
+                idle_since = time.monotonic()
+                print("[WATCHDOG] control plane idle; grace timer started.", flush=True)
+            elif time.monotonic() - idle_since >= idle_seconds:
+                prompt = recovery_prompt or ORCHESTRATOR_WATCHDOG_RECOVERY
+                attempt_owner = f"watchdog:{orchestrator}:{uuid.uuid4()}"
+                print("[WATCHDOG] idle threshold reached; resuming orchestrator.", flush=True)
+                store.event(owner, "orchestrator_watchdog_resume", {
+                    "orchestrator": orchestrator, "session_id": sid,
+                    "idle_seconds": idle_seconds,
+                })
+                try:
+                    scheduled_origin_chat(
+                        cfg, store, attempt_owner, hermes_client(cfg), sid,
+                        prompt, delivery_timeout(cfg),
+                    )
+                except Exception as e:
+                    # A timeout after creating a child is expected: scheduled_origin_chat
+                    # releases that child before raising. Keep watching durable state.
+                    print(f"[WATCHDOG] recovery turn ended: {type(e).__name__}: {e}", flush=True)
+                    store.event(owner, "orchestrator_watchdog_turn_ended", {"error": str(e)})
+                idle_since = time.monotonic()
+            cycles += 1
+            if max_cycles is not None and cycles >= max_cycles:
+                return
+            time.sleep(poll_seconds)
+    finally:
+        store.release_resource(resource, owner)
 
 
 def launch_detached(cfg: Config, argv: list[str], job_id: str, role: str) -> subprocess.Popen[Any]:
@@ -1685,6 +1755,14 @@ def cmd_turn_complete(cfg: Config, store: StateStore, args: argparse.Namespace) 
     store.mark_origin_turn_complete(session_id)
 
 
+def cmd_watch_orchestrator(cfg: Config, store: StateStore, args: argparse.Namespace) -> None:
+    until_file = expand(args.until_file) if args.until_file else None
+    run_orchestrator_watchdog(
+        cfg, store, args.orchestrator, args.idle_seconds, args.poll_seconds,
+        until_file, args.prompt,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Hermes session handoff/orchestration prototype")
     p.add_argument("--config", default=default_config_path())
@@ -1791,6 +1869,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("list-locks")
     s.set_defaults(fn=cmd_list_locks)
+
+    s = sub.add_parser(
+        "watch-orchestrator",
+        help="resume an idle orchestrator while preserving active jobs and LLM_SLOT",
+    )
+    s.add_argument("orchestrator", help="registered orchestrator alias or Hermes session id")
+    s.add_argument("--idle-seconds", type=float, default=120)
+    s.add_argument("--poll-seconds", type=float, default=5)
+    s.add_argument("--until-file", help="stop when this phase verdict/artifact exists")
+    s.add_argument("--prompt", help="custom compact recovery prompt")
+    s.set_defaults(fn=cmd_watch_orchestrator)
 
     s = sub.add_parser("turn-complete", help=argparse.SUPPRESS)
     s.set_defaults(fn=cmd_turn_complete)
