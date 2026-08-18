@@ -718,6 +718,7 @@ After HANDOFF_ACCEPTED, end the turn immediately.
 def scheduled_origin_chat(
     cfg: Config, store: StateStore, owner: str, client: Any,
     origin_sid: str, prompt: str, timeout_seconds: int,
+    retry_once_override: Optional[bool] = None,
 ) -> dict[str, Any]:
     """Run an origin turn and release its handoffs if Hermes is forcibly stopped.
 
@@ -728,8 +729,9 @@ def scheduled_origin_chat(
     child was created, optionally run one bounded control-only recovery turn.
     """
     current_prompt = prompt.rstrip() + ORCHESTRATOR_CONTROL_RULE
-    retry_once = bool(
-        cfg.raw.get("supervisor", {}).get("origin_delivery_retry_once", True)
+    retry_once = (
+        bool(cfg.raw.get("supervisor", {}).get("origin_delivery_retry_once", True))
+        if retry_once_override is None else retry_once_override
     )
     attempt = 0
     while True:
@@ -835,7 +837,7 @@ def run_orchestrator_watchdog(
                 try:
                     scheduled_origin_chat(
                         cfg, store, attempt_owner, hermes_client(cfg), sid,
-                        prompt, delivery_timeout(cfg),
+                        prompt, delivery_timeout(cfg), retry_once_override=False,
                     )
                 except Exception as e:
                     # A timeout after creating a child is expected: scheduled_origin_chat
