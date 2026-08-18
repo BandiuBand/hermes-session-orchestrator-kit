@@ -777,6 +777,14 @@ def orchestration_busy(store: StateStore) -> bool:
     return row is not None
 
 
+def durable_idle_age_seconds(store: StateStore) -> float:
+    row = store.db.execute("SELECT MAX(updated_at) AS updated_at FROM jobs").fetchone()
+    if not row or not row["updated_at"]:
+        return 0.0
+    updated = datetime.fromisoformat(str(row["updated_at"]))
+    return max(0.0, (datetime.now(timezone.utc) - updated).total_seconds())
+
+
 def run_orchestrator_watchdog(
     cfg: Config, store: StateStore, orchestrator: str, idle_seconds: float,
     poll_seconds: float, until_file: Optional[str], recovery_prompt: Optional[str],
@@ -800,7 +808,8 @@ def run_orchestrator_watchdog(
             if orchestration_busy(store):
                 idle_since = None
             elif idle_since is None:
-                idle_since = time.monotonic()
+                prior_idle = min(idle_seconds, durable_idle_age_seconds(store))
+                idle_since = time.monotonic() - prior_idle
                 print("[WATCHDOG] control plane idle; grace timer started.", flush=True)
             elif time.monotonic() - idle_since >= idle_seconds:
                 prompt = recovery_prompt or ORCHESTRATOR_WATCHDOG_RECOVERY

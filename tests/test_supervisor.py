@@ -113,6 +113,17 @@ def test_orchestration_busy_tracks_jobs_and_llm_slot():
         store.close()
 
 
+def test_durable_idle_age_uses_latest_job_update():
+    with tempfile.TemporaryDirectory() as td:
+        store = h.StateStore(os.path.join(td, "state.db"))
+        assert h.durable_idle_age_seconds(store) == 0
+        job_id = store.create_job("delegate", "origin", None, {"task": "x"})
+        assert 0 <= h.durable_idle_age_seconds(store) < 2
+        store.set_job(job_id, "delivered")
+        assert 0 <= h.durable_idle_age_seconds(store) < 2
+        store.close()
+
+
 def test_watchdog_stops_when_phase_verdict_exists_without_resuming():
     with tempfile.TemporaryDirectory() as td:
         verdict = os.path.join(td, "P2.json")
