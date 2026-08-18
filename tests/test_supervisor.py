@@ -104,6 +104,8 @@ def test_orchestration_busy_tracks_jobs_and_llm_slot():
         assert not h.orchestration_busy(store)
         job_id = store.create_job("delegate", "origin", None, {"task": "x"})
         assert h.orchestration_busy(store)
+        assert h.orchestration_busy(store, "origin")
+        assert not h.orchestration_busy(store, "another-origin")
         store.set_job(job_id, "delivered", {"ok": True})
         assert not h.orchestration_busy(store)
         store.acquire_resource("LLM_SLOT", "probe", 1, 60, 0.001)

@@ -767,13 +767,20 @@ def origin_release_timeout(cfg: Config) -> float:
     return float(cfg.raw.get("supervisor", {}).get("origin_release_timeout_seconds", 180))
 
 
-def orchestration_busy(store: StateStore) -> bool:
+def orchestration_busy(store: StateStore, origin_session_id: Optional[str] = None) -> bool:
     """True only while supervisor-owned work can legitimately make progress."""
     if any(row["resource"] == "LLM_SLOT" for row in store.resource_locks()):
         return True
-    row = store.db.execute(
-        "SELECT 1 FROM jobs WHERE state IN ('accepted','running') LIMIT 1"
-    ).fetchone()
+    if origin_session_id:
+        row = store.db.execute(
+            "SELECT 1 FROM jobs WHERE origin_session_id=? "
+            "AND state IN ('accepted','running') LIMIT 1",
+            (origin_session_id,),
+        ).fetchone()
+    else:
+        row = store.db.execute(
+            "SELECT 1 FROM jobs WHERE state IN ('accepted','running') LIMIT 1"
+        ).fetchone()
     return row is not None
 
 
@@ -805,7 +812,7 @@ def run_orchestrator_watchdog(
             if until_file and os.path.isfile(until_file):
                 print(f"[WATCHDOG] completion file exists: {until_file}", flush=True)
                 return
-            if orchestration_busy(store):
+            if orchestration_busy(store, sid):
                 idle_since = None
             elif idle_since is None:
                 prior_idle = min(idle_seconds, durable_idle_age_seconds(store))
