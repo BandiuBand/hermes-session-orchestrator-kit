@@ -44,6 +44,8 @@ def test_post_llm_hook_releases_only_accepted_origin_job():
             h.cmd_turn_complete(cfg, store, Namespace())
         assert store.origin_turn_released(accepted)
         assert not store.origin_turn_released(running)
+        assert store.released_child_jobs("origin-one", set()) == [accepted]
+        assert store.released_child_jobs("origin-one", {accepted}) == []
         store.wait_origin_turn_release(accepted, timeout_seconds=0.1, poll_seconds=0.001)
         store.close()
 

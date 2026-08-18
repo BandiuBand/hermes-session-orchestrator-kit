@@ -273,6 +273,13 @@ class StateStore:
             "SELECT 1 FROM turn_releases WHERE job_id=?", (job_id,)
         ).fetchone() is not None
 
+    def released_child_jobs(self, origin_session_id: str, exclude: set[str]) -> list[str]:
+        rows = self.db.execute(
+            "SELECT j.id FROM jobs j JOIN turn_releases t ON t.job_id=j.id "
+            "WHERE j.origin_session_id=?", (origin_session_id,),
+        ).fetchall()
+        return [row["id"] for row in rows if row["id"] not in exclude]
+
     def wait_origin_turn_release(self, job_id: str, timeout_seconds: float,
                                  poll_seconds: float = 0.2) -> None:
         if timeout_seconds <= 0:
@@ -438,6 +445,7 @@ class HermesCLI:
         self.model = hermes.get("model")
         self.visible = os.environ.get("HANDOFF_VISIBLE_CONSOLE") == "1"
         self.visible_idle_timeout_seconds: Optional[float] = None
+        self.turn_stop_check: Optional[Any] = None
         self.visible_exit_drain_seconds = float(hermes.get("visible_exit_drain_seconds", 2))
         self.max_turns = int(hermes.get("worker_max_turns", 80))
         self.chat_extra_argv = hermes.get("cli_chat_extra_argv", [])
@@ -510,10 +518,22 @@ class HermesCLI:
         deadline = time.monotonic() + timeout
         last_output_at = time.monotonic()
         idle_timed_out = False
+        handoff_released = False
         stream_done = False
         exit_drain_deadline: Optional[float] = None
         try:
             while not stream_done:
+                if callable(self.turn_stop_check) and self.turn_stop_check():
+                    handoff_released = True
+                    print("\n[SUPERVISOR] Child handoff released; stopping origin process.", flush=True)
+                    if proc.poll() is None:
+                        try:
+                            proc.send_signal(signal.CTRL_BREAK_EVENT) if os.name == "nt" else proc.terminate()
+                            proc.wait(timeout=5)
+                        except Exception:
+                            proc.kill()
+                            proc.wait()
+                    break
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise subprocess.TimeoutExpired(argv, timeout)
@@ -562,7 +582,7 @@ class HermesCLI:
                 proc.wait()
             raise
         cp = subprocess.CompletedProcess(argv, rc, "".join(lines), "")
-        if cp.returncode != 0:
+        if cp.returncode != 0 and not handoff_released:
             raise RuntimeError(
                 f"Hermes CLI {operation} failed ({cp.returncode}): {shlex.join(argv[:4])}\n"
                 f"output: {cp.stdout[-4000:]}"
@@ -750,9 +770,19 @@ def scheduled_origin_chat(
     attempt = 0
     while True:
         try:
+            existing_jobs = {
+                row["id"] for row in store.db.execute(
+                    "SELECT id FROM jobs WHERE origin_session_id=?", (origin_sid,)
+                )
+            }
             previous_idle_timeout = getattr(client, "visible_idle_timeout_seconds", None)
+            previous_stop_check = getattr(client, "turn_stop_check", None)
             if hasattr(client, "visible_idle_timeout_seconds"):
                 client.visible_idle_timeout_seconds = origin_idle_timeout(cfg)
+            if hasattr(client, "turn_stop_check"):
+                client.turn_stop_check = lambda: bool(
+                    store.released_child_jobs(origin_sid, existing_jobs)
+                )
             try:
                 return scheduled_chat(
                     cfg, store, owner, client, origin_sid, current_prompt,
@@ -761,6 +791,8 @@ def scheduled_origin_chat(
             finally:
                 if hasattr(client, "visible_idle_timeout_seconds"):
                     client.visible_idle_timeout_seconds = previous_idle_timeout
+                if hasattr(client, "turn_stop_check"):
+                    client.turn_stop_check = previous_stop_check
         except subprocess.TimeoutExpired:
             released = store.mark_origin_turn_complete(origin_sid)
             store.event(owner, "origin_forced_stop_released", {
