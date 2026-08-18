@@ -8,7 +8,7 @@
     "worker_turn_timeout_seconds": 1800,
     "worker_max_turns": 80,
     "cli_chat_extra_argv": ["--toolsets", "terminal,file,skills", "--skills", "session-handoff"],
-    "delivery_timeout_seconds": 120,
+    "delivery_timeout_seconds": 900,
     "no_restore_cwd": false,
     "model": "auto",
     "lm_studio_cli_argv": ["lms"],
@@ -22,6 +22,7 @@
   "supervisor": {
     "show_console": true,
     "origin_release_timeout_seconds": 1200,
+    "origin_idle_timeout_seconds": 120,
     "origin_delivery_retry_once": true,
     "console_close_delay_seconds": 10
   }

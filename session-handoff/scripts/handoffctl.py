@@ -437,6 +437,7 @@ class HermesCLI:
         self.no_restore_cwd = bool(hermes.get("no_restore_cwd", False))
         self.model = hermes.get("model")
         self.visible = os.environ.get("HANDOFF_VISIBLE_CONSOLE") == "1"
+        self.visible_idle_timeout_seconds: Optional[float] = None
         self.visible_exit_drain_seconds = float(hermes.get("visible_exit_drain_seconds", 2))
         self.max_turns = int(hermes.get("worker_max_turns", 80))
         self.chat_extra_argv = hermes.get("cli_chat_extra_argv", [])
@@ -507,6 +508,8 @@ class HermesCLI:
 
         threading.Thread(target=read_output, daemon=True).start()
         deadline = time.monotonic() + timeout
+        last_output_at = time.monotonic()
+        idle_timed_out = False
         stream_done = False
         exit_drain_deadline: Optional[float] = None
         try:
@@ -514,6 +517,12 @@ class HermesCLI:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise subprocess.TimeoutExpired(argv, timeout)
+                if (
+                    self.visible_idle_timeout_seconds is not None
+                    and time.monotonic() - last_output_at >= self.visible_idle_timeout_seconds
+                ):
+                    idle_timed_out = True
+                    raise subprocess.TimeoutExpired(argv, self.visible_idle_timeout_seconds)
                 if proc.poll() is not None and exit_drain_deadline is None:
                     exit_drain_deadline = time.monotonic() + self.visible_exit_drain_seconds
                 if exit_drain_deadline is not None and time.monotonic() >= exit_drain_deadline:
@@ -528,11 +537,16 @@ class HermesCLI:
                 if line is None:
                     stream_done = True
                 else:
+                    last_output_at = time.monotonic()
                     lines.append(line)
                     print(line, end="", flush=True)
             rc = proc.wait(timeout=max(0.1, deadline - time.monotonic()))
         except subprocess.TimeoutExpired:
-            print(f"\n[SUPERVISOR] {operation} timed out after {timeout}s; stopping Hermes.", flush=True)
+            reason = (
+                f"was idle for {self.visible_idle_timeout_seconds:g}s"
+                if idle_timed_out else f"timed out after {timeout}s"
+            )
+            print(f"\n[SUPERVISOR] {operation} {reason}; stopping Hermes.", flush=True)
             if os.name == "nt":
                 try:
                     proc.send_signal(signal.CTRL_BREAK_EVENT)
@@ -736,10 +750,17 @@ def scheduled_origin_chat(
     attempt = 0
     while True:
         try:
-            return scheduled_chat(
-                cfg, store, owner, client, origin_sid, current_prompt,
-                timeout_seconds,
-            )
+            previous_idle_timeout = getattr(client, "visible_idle_timeout_seconds", None)
+            if hasattr(client, "visible_idle_timeout_seconds"):
+                client.visible_idle_timeout_seconds = origin_idle_timeout(cfg)
+            try:
+                return scheduled_chat(
+                    cfg, store, owner, client, origin_sid, current_prompt,
+                    timeout_seconds,
+                )
+            finally:
+                if hasattr(client, "visible_idle_timeout_seconds"):
+                    client.visible_idle_timeout_seconds = previous_idle_timeout
         except subprocess.TimeoutExpired:
             released = store.mark_origin_turn_complete(origin_sid)
             store.event(owner, "origin_forced_stop_released", {
@@ -767,6 +788,10 @@ def worker_turn_timeout(cfg: Config) -> int:
 
 def origin_release_timeout(cfg: Config) -> float:
     return float(cfg.raw.get("supervisor", {}).get("origin_release_timeout_seconds", 180))
+
+
+def origin_idle_timeout(cfg: Config) -> float:
+    return float(cfg.raw.get("supervisor", {}).get("origin_idle_timeout_seconds", 120))
 
 
 def orchestration_busy(store: StateStore, origin_session_id: Optional[str] = None) -> bool:

@@ -135,7 +135,8 @@ def test_watchdog_stops_when_phase_verdict_exists_without_resuming():
         store.upsert_session("orchestrator", "origin-sid", "orchestrator")
         with mock.patch.object(h, "scheduled_origin_chat") as resume:
             h.run_orchestrator_watchdog(
-                cfg, store, "orchestrator", 0, 0.001, verdict, None, max_cycles=1,
+                cfg, store, "orchestrator", 0, 0.001, verdict, None,
+                rotate_after=2, max_cycles=1,
             )
         resume.assert_not_called()
         assert store.resource_locks() == []
@@ -183,6 +184,30 @@ def test_origin_timeout_without_child_retries_once_with_control_only_prompt():
         assert "[ORCHESTRATOR_CONTROL_RULE]" in first_prompt
         assert "[ORIGIN_DELIVERY_RECOVERY]" in retry_prompt
         assert "very large worker payload" not in retry_prompt
+        store.close()
+
+
+def test_origin_chat_applies_console_idle_timeout_and_restores_client():
+    class IdleAwareClient:
+        visible_idle_timeout_seconds = None
+
+        def chat_with_timeout(self, sid, prompt, timeout_seconds):
+            assert sid == "origin-sid"
+            assert self.visible_idle_timeout_seconds == 17
+            return {"response": "done"}
+
+    with tempfile.TemporaryDirectory() as td:
+        cfg = h.Config({
+            "state_db": os.path.join(td, "state.db"),
+            "supervisor": {"origin_idle_timeout_seconds": 17},
+        })
+        store = h.StateStore(cfg.db_path)
+        client = IdleAwareClient()
+        out = h.scheduled_origin_chat(
+            cfg, store, "origin-job", client, "origin-sid", "review", 900,
+        )
+        assert out == {"response": "done"}
+        assert client.visible_idle_timeout_seconds is None
         store.close()
 
 

@@ -49,6 +49,10 @@ the watchdog can rotate the alias to a fresh persistent orchestrator session.
 The old Hermes session is preserved, while the replacement continues from
 durable task/status artifacts instead of inheriting a wedged context.
 
+`supervisor.origin_idle_timeout_seconds` applies only to visible orchestrator
+control turns and resets whenever Hermes prints console/tool output. Worker and
+external-probe wall-time budgets remain independent.
+
 ## Requirements
 
 - Python 3.10 or newer

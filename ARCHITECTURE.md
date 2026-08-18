@@ -279,6 +279,11 @@ If the worker turn times out, stop its Hermes process, export the complete persi
 
 Every result delivered to the origin includes a short reminder that the origin is an orchestrator and must perform only a bounded control-plane decision, not continue the worker's investigation. If the origin exceeds its delivery timeout, treat the forced stop as the end of that turn and release any accepted child handoffs because the normal `post_llm_call` hook cannot fire. When no child was created, resume the same origin exactly once with a compact recovery prompt. The recovery prompt relies on the result and partial checks already persisted in the Hermes session and must not repeat the large worker payload. A second timeout is terminal for that delivery attempt, except that any child handoff it created is still released.
 
+Visible orchestrator control turns also have an output-idle watchdog (120 seconds
+by default). Each console/tool-output line resets it. This is separate from the
+larger delivery wall-time and is not applied to worker or external-probe turns,
+so useful silent CPU work is not mistaken for an idle orchestrator.
+
 ### Orchestrator becomes idle
 
 Run `watch-orchestrator` for a bounded phase. The watchdog does not use GPU
