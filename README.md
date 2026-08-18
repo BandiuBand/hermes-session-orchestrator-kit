@@ -44,6 +44,11 @@ no `LLM_SLOT` owner and no accepted/running job for the configured interval does
 it resume the same durable orchestrator session. Point `--until-file` at the phase
 verdict so a completed phase is never restarted.
 
+After two idle resumes with no new handoff (configurable with `--rotate-after`),
+the watchdog can rotate the alias to a fresh persistent orchestrator session.
+The old Hermes session is preserved, while the replacement continues from
+durable task/status artifacts instead of inheriting a wedged context.
+
 ## Requirements
 
 - Python 3.10 or newer

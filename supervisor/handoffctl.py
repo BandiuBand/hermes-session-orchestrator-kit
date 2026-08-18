@@ -795,13 +795,14 @@ def durable_idle_age_seconds(store: StateStore) -> float:
 def run_orchestrator_watchdog(
     cfg: Config, store: StateStore, orchestrator: str, idle_seconds: float,
     poll_seconds: float, until_file: Optional[str], recovery_prompt: Optional[str],
-    max_cycles: Optional[int] = None,
+    rotate_after: int = 2, max_cycles: Optional[int] = None,
 ) -> None:
     sid = resolve_sid(store, orchestrator)
-    owner = f"WATCHDOG:{sid}"
-    resource = f"ORCHESTRATOR_WATCHDOG:{sid}"
+    owner = f"WATCHDOG:{orchestrator}"
+    resource = f"ORCHESTRATOR_WATCHDOG:{orchestrator}"
     store.acquire_resource(resource, owner, 0.01, 86400, 0.01)
     idle_since: Optional[float] = None
+    idle_resumes = 0
     cycles = 0
     try:
         print(
@@ -821,6 +822,11 @@ def run_orchestrator_watchdog(
             elif time.monotonic() - idle_since >= idle_seconds:
                 prompt = recovery_prompt or ORCHESTRATOR_WATCHDOG_RECOVERY
                 attempt_owner = f"watchdog:{orchestrator}:{uuid.uuid4()}"
+                before_jobs = {
+                    row["id"] for row in store.db.execute(
+                        "SELECT id FROM jobs WHERE origin_session_id=?", (sid,)
+                    )
+                }
                 print("[WATCHDOG] idle threshold reached; resuming orchestrator.", flush=True)
                 store.event(owner, "orchestrator_watchdog_resume", {
                     "orchestrator": orchestrator, "session_id": sid,
@@ -836,7 +842,40 @@ def run_orchestrator_watchdog(
                     # releases that child before raising. Keep watching durable state.
                     print(f"[WATCHDOG] recovery turn ended: {type(e).__name__}: {e}", flush=True)
                     store.event(owner, "orchestrator_watchdog_turn_ended", {"error": str(e)})
-                idle_since = time.monotonic()
+                new_jobs = {
+                    row["id"] for row in store.db.execute(
+                        "SELECT id FROM jobs WHERE origin_session_id=?", (sid,)
+                    )
+                } - before_jobs
+                idle_resumes = 0 if new_jobs else idle_resumes + 1
+                if until_file and os.path.isfile(until_file):
+                    print(f"[WATCHDOG] completion file exists: {until_file}", flush=True)
+                    return
+                if rotate_after > 0 and idle_resumes >= rotate_after:
+                    old_sid = sid
+                    title = f"{orchestrator}-recovered-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+                    print(
+                        f"[WATCHDOG] {idle_resumes} idle resumes made no handoff; "
+                        "rotating orchestrator session.", flush=True,
+                    )
+                    created = scheduled_create_session(
+                        cfg, store, f"watchdog-rotate:{uuid.uuid4()}",
+                        hermes_client(cfg), title, "orchestrator",
+                    )
+                    sid = extract_session_id(created)
+                    store.upsert_session(
+                        orchestrator, sid, "orchestrator",
+                        metadata={"watchdog_replaced_session_id": old_sid},
+                    )
+                    store.event(owner, "orchestrator_watchdog_rotated", {
+                        "orchestrator": orchestrator,
+                        "old_session_id": old_sid, "new_session_id": sid,
+                    })
+                    print(f"[WATCHDOG] new orchestrator session={sid}", flush=True)
+                    idle_resumes = 0
+                    idle_since = time.monotonic() - idle_seconds
+                else:
+                    idle_since = time.monotonic()
             cycles += 1
             if max_cycles is not None and cycles >= max_cycles:
                 return
@@ -1775,7 +1814,7 @@ def cmd_watch_orchestrator(cfg: Config, store: StateStore, args: argparse.Namesp
     until_file = expand(args.until_file) if args.until_file else None
     run_orchestrator_watchdog(
         cfg, store, args.orchestrator, args.idle_seconds, args.poll_seconds,
-        until_file, args.prompt,
+        until_file, args.prompt, args.rotate_after,
     )
 
 
@@ -1895,6 +1934,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--poll-seconds", type=float, default=5)
     s.add_argument("--until-file", help="stop when this phase verdict/artifact exists")
     s.add_argument("--prompt", help="custom compact recovery prompt")
+    s.add_argument(
+        "--rotate-after", type=int, default=2,
+        help="replace the durable orchestrator session after N idle resumes with no handoff; 0 disables",
+    )
     s.set_defaults(fn=cmd_watch_orchestrator)
 
     s = sub.add_parser("turn-complete", help=argparse.SUPPRESS)

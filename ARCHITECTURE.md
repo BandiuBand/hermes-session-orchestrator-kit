@@ -290,6 +290,11 @@ session with a compact control-only prompt. An `--until-file` phase verdict stop
 the watchdog and prevents it from restarting a completed phase. A per-session
 watchdog lock prevents duplicate watchdog processes.
 
+If repeated idle recovery turns create no handoff, the optional circuit breaker
+rotates the alias to a fresh persistent orchestrator session while preserving the
+old Hermes session. The replacement reconstructs control state from durable phase
+files instead of inheriting a wedged context.
+
 ### External command times out
 
 Send SIGTERM, wait grace period, then SIGKILL. Persist stdout/stderr paths and timeout status.
